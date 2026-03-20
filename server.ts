@@ -23,16 +23,44 @@ interface UserData {
 const USERS_FILE = path.join(process.cwd(), "users.json");
 const SETTINGS_FILE = path.join(process.cwd(), "settings.json");
 
+interface BotConfig {
+  id: string;
+  name: string;
+  token: string;
+  status: string;
+  active: boolean;
+}
+
 interface Settings {
-  dailyCode: string;
+  dailyCodes: string[];
   activeCodes: string[];
   referralPoints: number;
+  bots: BotConfig[];
+  adminSecret: string;
+  buttonNames: {
+    getCodes: string;
+    referEarn: string;
+    profile: string;
+    support: string;
+    dailyCode: string;
+    activeCodes: string;
+  };
 }
 
 const defaultSettings: Settings = {
-  dailyCode: "FREE500",
+  dailyCodes: ["FREE500"],
   activeCodes: ["FREE500", "TOP777", "FOLLOW2024"],
-  referralPoints: 1
+  referralPoints: 1,
+  bots: [],
+  adminSecret: "adminpanelopen123",
+  buttonNames: {
+    getCodes: "💎 GET CODES 🎁",
+    referEarn: "🤝 Refer & Earn",
+    profile: "👤 Profile",
+    support: "📞 Support",
+    dailyCode: "🔥 Daily Code",
+    activeCodes: "📋 Active Codes"
+  }
 };
 
 function loadSettings(): Settings {
@@ -84,6 +112,13 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 async function startServer() {
+  console.log("🚀 Server starting...");
+  console.log(`🔑 GEMINI_API_KEY: ${process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY" ? "SET (..." + process.env.GEMINI_API_KEY.substring(0, 5) + ")" : "NOT SET or DEFAULT"}`);
+  console.log(`🤖 TELEGRAM_BOT_TOKEN: ${process.env.TELEGRAM_BOT_TOKEN ? "SET (..." + process.env.TELEGRAM_BOT_TOKEN.substring(0, 5) + ")" : "NOT SET"}`);
+  console.log(`🤖 BOT_TOKEN: ${process.env.BOT_TOKEN ? "SET (..." + process.env.BOT_TOKEN.substring(0, 5) + ")" : "NOT SET"}`);
+  console.log(`👤 ADMIN_USERNAME: ${process.env.ADMIN_USERNAME || "default (admin)"}`);
+  console.log(`🔒 ADMIN_PASSWORD: ${process.env.ADMIN_PASSWORD ? "SET (..." + process.env.ADMIN_PASSWORD.substring(0, 2) + ")" : "default (password123)"}`);
+
   const app = express();
   const PORT = 3000;
 
@@ -93,9 +128,16 @@ async function startServer() {
   const token = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
   const geminiKey = process.env.GEMINI_API_KEY;
   
-  let botStatus = "Disconnected";
-  let botName = "Unknown";
   let lastMessages: any[] = [];
+
+  // API routes
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok" });
+  });
+
+  app.get("/api/bot-status", (req, res) => {
+    res.json({ messages: lastMessages, settings });
+  });
 
   // Load users into memory
   let users = loadUsers();
@@ -104,38 +146,96 @@ async function startServer() {
   // Initialize Gemini
   const ai = new GoogleGenAI({ apiKey: geminiKey || "" });
 
-  let bot: TelegramBot | null = null;
+  const botInstances = new Map<string, { bot: TelegramBot, token: string }>();
+  const authenticatedAdmins = new Set<number>();
+  const customCommands = new Map<string, string>();
 
-  if (token && token !== "YOUR_BOT_TOKEN") {
+  async function setupBot(botConfig: BotConfig) {
+    const { id, active } = botConfig;
+    const token = (botConfig.token || "").trim();
+
+    // Stop existing instance if any
+    if (botInstances.has(id)) {
+      try {
+        const { bot: oldBot } = botInstances.get(id)!;
+        await oldBot.stopPolling();
+        botInstances.delete(id);
+        console.log(`Stopped bot instance: ${id}`);
+      } catch (err) {
+        console.error(`Error stopping bot ${id}:`, err);
+      }
+    }
+
+    // Check if another bot instance is already using this token
+    for (const [existingId, { token: existingToken }] of botInstances.entries()) {
+      if (existingToken === token) {
+        console.log(`⚠️ Bot ${id} skipped: Token already in use by bot ${existingId}`);
+        updateBotStatus(id, `Error: Duplicate Token (Used by ${existingId})`);
+        return;
+      }
+    }
+
+    // Basic token format validation (e.g., 123456789:ABCDefghIJKLmnopQRSTuvwxYZ)
+    const tokenRegex = /^\d+:[a-zA-Z0-9_-]{20,}$/;
+    if (!active || !token || token === "YOUR_BOT_TOKEN" || !tokenRegex.test(token)) {
+      console.log(`⚠️ Bot ${id} skipped: active=${active}, tokenPresent=${!!token}, validFormat=${tokenRegex.test(token)}`);
+      updateBotStatus(id, token && !tokenRegex.test(token) ? "Error: Invalid Token Format" : "Inactive");
+      return;
+    }
+
     try {
-      console.log("Attempting to connect to Telegram...");
-      bot = new TelegramBot(token, { polling: true });
-      
-      bot.on("polling_error", (error) => {
-        console.error("Telegram Polling Error:", error.message);
-        botStatus = "Error: Connection Issue";
+      console.log(`🚀 Attempting to connect bot ${id} with token: ${token.substring(0, 10)}...`);
+      const bot = new TelegramBot(token, { polling: true });
+      botInstances.set(id, { bot, token });
+      updateBotStatus(id, "Connecting...");
+
+      bot.on("polling_error", (error: any) => {
+        console.error(`❌ Telegram Polling Error (${id}):`, error.message);
+        if (error.message.includes("404 Not Found") || error.message.includes("401 Unauthorized")) {
+          updateBotStatus(id, `Error: ${error.message.includes("401") ? "Invalid Token (401)" : "Invalid Token (404)"}`);
+          bot.stopPolling();
+        } else if (error.message.includes("409 Conflict")) {
+          updateBotStatus(id, "Error: Conflict (Multiple Instances)");
+          bot.stopPolling();
+        } else {
+          updateBotStatus(id, "Error: Connection Issue");
+        }
       });
 
-      bot.on("error", (error) => {
-        console.error("Telegram General Error:", error.message);
-        botStatus = "Error: Bot Crashed";
+      bot.on("error", (error: any) => {
+        console.error(`Telegram General Error (${id}):`, error.message);
+        if (error.message.includes("404 Not Found")) {
+          updateBotStatus(id, "Error: Invalid Token (404)");
+          bot.stopPolling();
+        } else {
+          updateBotStatus(id, "Error: Bot Crashed");
+        }
       });
 
-      botStatus = "Connecting...";
-      
-      bot.getMe().then((me) => {
-        botName = me.username || "Bot";
-        botStatus = "Connected";
-        console.log(`✅ Bot @${botName} is successfully connected!`);
-      }).catch((err) => {
-        console.error("❌ Failed to get bot info:", err.message);
-        botStatus = "Error: Invalid Token";
-      });
+      const me = await bot.getMe();
+      const botName = me.username || "Bot";
+      updateBotStatus(id, "Connected", botName);
+      console.log(`✅ Bot @${botName} (${id}) is successfully connected!`);
 
-      // Custom commands store (in-memory for simplicity)
-      const customCommands = new Map<string, string>();
+      // Attach listeners
+      attachBotListeners(bot, botName);
+    } catch (err: any) {
+      console.error(`❌ Failed to initialize bot ${id}:`, err.message);
+      updateBotStatus(id, `Error: ${err.message}`);
+    }
+  }
 
-      bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
+  function updateBotStatus(id: string, status: string, name?: string) {
+    const botIndex = settings.bots.findIndex(b => b.id === id);
+    if (botIndex !== -1) {
+      settings.bots[botIndex].status = status;
+      if (name) settings.bots[botIndex].name = name;
+    }
+  }
+
+  function attachBotListeners(bot: TelegramBot, botName: string) {
+    console.log(`🎧 Attaching listeners to bot @${botName}`);
+    bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
         const chatId = msg.chat.id;
         const userId = msg.from?.id?.toString();
         if (!userId) return;
@@ -192,6 +292,7 @@ async function startServer() {
       });
 
       bot.on("callback_query", async (callbackQuery) => {
+        console.log(`🖱️ [${botName}] Callback Query: ${callbackQuery.data} from ${callbackQuery.from.first_name}`);
         const msg = callbackQuery.message;
         if (!msg) return;
         const data = callbackQuery.data;
@@ -228,12 +329,28 @@ async function startServer() {
             const user = users[userId];
             if (user && !user.joined) {
               user.joined = true;
+              
+              // Log event for admin panel
+              lastMessages.unshift({
+                user: "SYSTEM",
+                text: `👤 User ${user.firstName} (@${user.username}) successfully joined all channels.`,
+                time: new Date().toLocaleTimeString()
+              });
+
               console.log(`👤 User ${userId} joined. Checking for referrer...`);
               // If referred by someone, give them points
               if (user.referredBy && users[user.referredBy]) {
                 const referrer = users[user.referredBy];
                 referrer.points += settings.referralPoints;
                 referrer.referrals += 1;
+                
+                // Log event for admin panel
+                lastMessages.unshift({
+                  user: "SYSTEM",
+                  text: `🔗 Referral: ${user.firstName} joined via ${referrer.firstName}. Referrer earned ${settings.referralPoints} points.`,
+                  time: new Date().toLocaleTimeString()
+                });
+
                 console.log(`✅ Referral successful! Referrer ${user.referredBy} earned ${settings.referralPoints} points. New balance: ${referrer.points}`);
                 bot.sendMessage(user.referredBy, `🎉 New Referral!\n+ ${settings.referralPoints} Points added.`);
               } else {
@@ -247,23 +364,23 @@ async function startServer() {
             const firstName = callbackQuery.from.first_name || "User";
             bot.answerCallbackQuery(callbackQuery.id, { text: "✅ Access Granted!" });
             
-            const successMessage = `👋 Welcome, <b>${firstName}</b>.\n_________________________\n\n💎 <b>LOOT SYSTEM</b> 💎\n\nRefer friends. Earn points. Redeem Shein Coupons for FREE.\n\nSelect an option below to begin.`;
+            const successMessage = `👋 Welcome, <b>${firstName}</b>.\n_________________________\n\n💎 <b>LOOT SYSTEM</b> 💎\n\nRefer friends. Earn points. Redeem premium loot for FREE.\n\nSelect an option below to begin.`;
             
             const options: TelegramBot.SendMessageOptions = {
               parse_mode: "HTML",
               reply_markup: {
                 keyboard: [
                   [
-                    { text: "💎 GET CODES 🎁" },
-                    { text: "🤝 Refer & Earn" }
+                    { text: settings.buttonNames.getCodes },
+                    { text: settings.buttonNames.referEarn }
                   ],
                   [
-                    { text: "👤 Profile" },
-                    { text: "📞 Support" }
+                    { text: settings.buttonNames.profile },
+                    { text: settings.buttonNames.support }
                   ],
                   [
-                    { text: "🔥 Daily Code" },
-                    { text: "📋 Active Codes" }
+                    { text: settings.buttonNames.dailyCode },
+                    { text: settings.buttonNames.activeCodes }
                   ]
                 ],
                 resize_keyboard: true
@@ -288,6 +405,14 @@ async function startServer() {
           } else {
             user.points -= 6;
             saveUsers(users);
+            
+            // Log event for admin panel
+            lastMessages.unshift({
+              user: "SYSTEM",
+              text: `🎁 Redemption: ${user.firstName} (@${user.username}) redeemed 1k followers for 6 points.`,
+              time: new Date().toLocaleTimeString()
+            });
+
             bot.answerCallbackQuery(callbackQuery.id, { 
               text: "✅ Redeemed successfully! Contact support to claim your followers.", 
               show_alert: true 
@@ -297,13 +422,134 @@ async function startServer() {
         }
       });
 
+      bot.onText(/\/echo (.+)/, (msg, match) => {
+        if (!match) return;
+        const resp = match[1];
+        bot.sendMessage(msg.chat.id, `📢 <b>Echo:</b> ${resp}`, { parse_mode: "HTML" });
+      });
+
+      bot.onText(/\/ping/, (msg) => {
+        console.log(`🏓 [${botName}] Ping received from ${msg.from?.first_name}`);
+        bot.sendMessage(msg.chat.id, "🏓 <b>PONG!</b> I am alive and listening.", { parse_mode: "HTML" });
+      });
+
+      bot.onText(/\/admin/, (msg) => {
+        console.log(`🔐 [${botName}] Admin command received from ${msg.from?.first_name}`);
+        const adminMsg = "🔐 <b>ADMIN ACCESS</b>\n_________________________\n\nPlease enter your <b>Admin Username</b> and <b>Password</b> in the following format:\n\n<code>login [username] [password]</code>\n\n<i>Example: login admin password123</i>";
+        bot.sendMessage(msg.chat.id, adminMsg, { parse_mode: "HTML" });
+      });
+
+      bot.onText(/login (\w+) (.+)/, (msg, match) => {
+        if (!match) return;
+        const username = match[1];
+        const password = match[2];
+        
+        const adminUsername = process.env.ADMIN_USERNAME || "admin";
+        const adminPassword = process.env.ADMIN_PASSWORD || "password123";
+
+        if (username === adminUsername && password === adminPassword) {
+          authenticatedAdmins.add(msg.chat.id);
+          const successMsg = "✅ <b>ADMIN LOGGED IN</b>\n_________________________\n\nYou now have access to admin commands via Telegram.\n\n<b>Commands:</b>\n/stats - View bot statistics\n/broadcast [msg] - Send message to all users\n/bots - Manage bot instances\n/logout - End admin session";
+          bot.sendMessage(msg.chat.id, successMsg, { parse_mode: "HTML" });
+        } else {
+          bot.sendMessage(msg.chat.id, "❌ <b>INVALID CREDENTIALS</b>\n\nPlease try again.", { parse_mode: "HTML" });
+        }
+      });
+
+      bot.onText(/\/logout/, (msg) => {
+        if (authenticatedAdmins.has(msg.chat.id)) {
+          authenticatedAdmins.delete(msg.chat.id);
+          bot.sendMessage(msg.chat.id, "🔒 <b>LOGGED OUT</b>\n\nYour admin session has ended.", { parse_mode: "HTML" });
+        }
+      });
+
+      bot.onText(/\/adminpanelopen123/, (msg) => {
+        const appUrl = process.env.APP_URL || "https://ais-dev-rzbx5hupfvpx2d3wg3ablv-376426211502.asia-east1.run.app";
+        const adminUrl = `${appUrl}/admin?secret=${settings.adminSecret}`;
+        bot.sendMessage(msg.chat.id, `🔐 <b>ADMIN PANEL ACCESS</b>\n\nClick the link below to access the admin panel:\n\n<a href="${adminUrl}">Open Admin Panel</a>`, { parse_mode: "HTML" });
+      });
+
+      bot.onText(/\/stats/, (msg) => {
+        if (!authenticatedAdmins.has(msg.chat.id)) {
+          bot.sendMessage(msg.chat.id, "❌ <b>UNAUTHORIZED</b>\n\nPlease use /admin to login first.", { parse_mode: "HTML" });
+          return;
+        }
+        const userCount = Object.keys(users).length;
+        const activeBots = Array.from(botInstances.values()).length;
+        const statsMsg = `📊 <b>BOT STATISTICS</b>\n_________________________\n\n👥 <b>Total Users:</b> ${userCount}\n🤖 <b>Active Bots:</b> ${activeBots}\n💎 <b>Referral Points:</b> ${settings.referralPoints}`;
+        bot.sendMessage(msg.chat.id, statsMsg, { parse_mode: "HTML" });
+      });
+
+      bot.onText(/\/bots/, (msg) => {
+        if (!authenticatedAdmins.has(msg.chat.id)) {
+          bot.sendMessage(msg.chat.id, "❌ <b>UNAUTHORIZED</b>\n\nPlease use /admin to login first.", { parse_mode: "HTML" });
+          return;
+        }
+        let botList = "🤖 <b>MANAGED BOTS</b>\n_________________________\n\n";
+        settings.bots.forEach((b, i) => {
+          botList += `${i + 1}. <b>${b.name || 'Unnamed'}</b>\n   Status: ${b.status}\n   Active: ${b.active ? '✅' : '❌'}\n\n`;
+        });
+        if (settings.bots.length === 0) botList += "No bots configured.";
+        bot.sendMessage(msg.chat.id, botList, { parse_mode: "HTML" });
+      });
+
+      bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+        if (!authenticatedAdmins.has(msg.chat.id)) {
+          bot.sendMessage(msg.chat.id, "❌ <b>UNAUTHORIZED</b>\n\nPlease use /admin to login first.", { parse_mode: "HTML" });
+          return;
+        }
+        if (!match) return;
+        const broadcastMsg = match[1];
+        
+        bot.sendMessage(msg.chat.id, "📢 <b>BROADCAST STARTED</b>\n\nSending message to all users...", { parse_mode: "HTML" });
+
+        let successCount = 0;
+        let failCount = 0;
+        const userIds = Object.keys(users);
+
+        for (const id of userIds) {
+          try {
+            // Try sending via current bot first
+            await bot.sendMessage(id, broadcastMsg, { parse_mode: "HTML" });
+            successCount++;
+          } catch (err) {
+            // Try other bots if current fails
+            let sent = false;
+            for (const [botId, { bot: otherBot }] of botInstances.entries()) {
+              try {
+                await otherBot.sendMessage(id, broadcastMsg, { parse_mode: "HTML" });
+                successCount++;
+                sent = true;
+                break;
+              } catch (e) {
+                continue;
+              }
+            }
+            if (!sent) failCount++;
+          }
+        }
+
+        bot.sendMessage(msg.chat.id, `✅ <b>BROADCAST COMPLETE</b>\n_________________________\n\n👥 <b>Success:</b> ${successCount}\n❌ <b>Failed:</b> ${failCount}`, { parse_mode: "HTML" });
+      });
+
       bot.onText(/\/help/, (msg) => {
-        const helpMessage = "🚀 <b>HELP MENU</b>\n_________________________\n\nI provide daily codes for the Top Follow app to help you get free followers.\n\n<b>Commands:</b>\n<code>/daily</code> - Get today's code\n<code>/code</code> - Show all active codes\n<code>/list</code> - See custom commands\n<code>/set [cmd] [text]</code> - Create your own command";
+        console.log(`❓ [${botName}] Help command received from ${msg.from?.first_name}`);
+        let helpMessage = "🚀 <b>HELP MENU</b>\n_________________________\n\nI provide daily codes for the Top Follow app to help you get free followers.\n\n<b>Commands:</b>\n<code>/daily</code> - Get today's code\n<code>/code</code> - Show all active codes\n<code>/list</code> - See custom commands\n<code>/set [cmd] [text]</code> - Create your own command";
+        
+        if (authenticatedAdmins.has(msg.chat.id)) {
+          helpMessage += "\n\n🔐 <b>ADMIN COMMANDS:</b>\n<code>/stats</code> - View bot stats\n<code>/broadcast [msg]</code> - Broadcast to all\n<code>/bots</code> - View bot instances\n<code>/logout</code> - End session";
+        } else {
+          helpMessage += "\n\n🔐 <b>ADMIN:</b>\n<code>/admin</code> - Login to admin panel";
+        }
+        
         bot.sendMessage(msg.chat.id, helpMessage, { parse_mode: "HTML" });
       });
 
       bot.onText(/\/daily/, (msg) => {
-        const dailyMessage = `🔥 <b>TODAY'S TOP FOLLOW CODE</b>\n_________________________\n\n👉 <code>${settings.dailyCode}</code>\n\nUse this in the app to get free coins!`;
+        const codes = settings.dailyCodes && settings.dailyCodes.length > 0 
+          ? settings.dailyCodes.map(c => `👉 <code>${c}</code>`).join('\n')
+          : `👉 <code>NO CODE TODAY</code>`;
+        const dailyMessage = `🔥 <b>TODAY'S TOP FOLLOW CODES</b>\n_________________________\n\n${codes}\n\nUse these in the app to get free coins!`;
         bot.sendMessage(msg.chat.id, dailyMessage, { parse_mode: "HTML" });
       });
 
@@ -336,6 +582,8 @@ async function startServer() {
 
       bot.on("message", async (msg) => {
         if (!msg.text) return;
+        console.log(`📩 [${botName}] Received: ${msg.text} from ${msg.from?.first_name}`);
+        
         const userId = msg.from?.id?.toString();
         if (!userId) return;
 
@@ -345,7 +593,7 @@ async function startServer() {
           text: msg.text,
           time: new Date().toLocaleTimeString()
         });
-        if (lastMessages.length > 10) lastMessages.pop();
+        if (lastMessages.length > 50) lastMessages.pop();
 
         // Handle custom commands
         if (msg.text.startsWith("/")) {
@@ -355,11 +603,11 @@ async function startServer() {
             return;
           }
           // If it's a command but not handled, ignore or send error
-          if (["start", "help", "set", "list", "daily", "code"].includes(cmd)) return;
+          if (["start", "help", "set", "list", "daily", "code", "ping", "admin"].includes(cmd)) return;
         }
 
         // Handle Keyboard Button Clicks
-        if (msg.text === "💎 GET CODES 🎁") {
+        if (msg.text === settings.buttonNames.getCodes) {
           const user = users[userId];
           const points = user ? user.points : 0;
           const redeemMessage = `🎁 <b>REDEEM SHOP</b>\n_________________________\n\n💎 Your Balance: ${points} Points\n👇 Available Loot:\n\n<i>Click an item to redeem instantly.</i>`;
@@ -371,7 +619,7 @@ async function startServer() {
               ]
             }
           });
-        } else if (msg.text === "🤝 Refer & Earn") {
+        } else if (msg.text === settings.buttonNames.referEarn) {
           const referralMessage = `🤝 <b>REFERRAL PROGRAM</b>\n_________________________\n\nInvite friends and earn points to redeem premium loot.\n\n🎁 Reward: ${settings.referralPoints} Points / User\n🔗 Your Link:\n<code>https://t.me/${botName}?start=ref_${userId}</code>\n\n<i>Tap to copy.</i>`;
           bot.sendMessage(msg.chat.id, referralMessage, {
             parse_mode: "HTML",
@@ -381,72 +629,96 @@ async function startServer() {
               ]
             }
           });
-        } else if (msg.text === "👤 Profile") {
+        } else if (msg.text === settings.buttonNames.profile) {
           const user = users[userId];
           const points = user ? user.points : 0;
           const profileMessage = `👤 <b>USER DASHBOARD</b>\n_________________________\n\n🆔 ID: <code>${userId}</code>\n💎 Balance: ${points} Points\n_________________________`;
           bot.sendMessage(msg.chat.id, profileMessage, { parse_mode: "HTML" });
-        } else if (msg.text === "📞 Support") {
+        } else if (msg.text === settings.buttonNames.support) {
           bot.sendMessage(msg.chat.id, "📞 <b>SUPPORT</b>\n_________________________\n\nContact: @Topfollow_officials", { parse_mode: "HTML" });
-        } else if (msg.text === "🔥 Daily Code") {
-          const dailyMessage = `🔥 <b>TODAY'S TOP FOLLOW CODE</b>\n_________________________\n\n👉 <code>${settings.dailyCode}</code>\n\nUse this in the app to get free coins!`;
+        } else if (msg.text === settings.buttonNames.dailyCode) {
+          const codes = settings.dailyCodes && settings.dailyCodes.length > 0 
+            ? settings.dailyCodes.map(c => `👉 <code>${c}</code>`).join('\n')
+            : `👉 <code>NO CODE TODAY</code>`;
+          const dailyMessage = `🔥 <b>TODAY'S TOP FOLLOW CODES</b>\n_________________________\n\n${codes}\n\nUse these in the app to get free coins!`;
           bot.sendMessage(msg.chat.id, dailyMessage, { parse_mode: "HTML" });
-        } else if (msg.text === "📋 Active Codes") {
+        } else if (msg.text === settings.buttonNames.activeCodes) {
           let codeList = settings.activeCodes.map((c, i) => `${i + 1}. <code>${c}</code>`).join("\n");
           const codeMessage = `📋 <b>ACTIVE TOP FOLLOW CODES</b>\n_________________________\n\n${codeList}\n\nType /daily for the freshest code!`;
           bot.sendMessage(msg.chat.id, codeMessage, { parse_mode: "HTML" });
         }
 
         // Default: Use Gemini AI for natural conversation
-        if (!msg.text.startsWith("/") && !["💎 GET CODES 🎁", "🤝 Refer & Earn", "👤 Profile", "📞 Support", "🔥 Daily Code", "📋 Active Codes"].includes(msg.text)) {
+        if (!msg.text.startsWith("/") && ![settings.buttonNames.getCodes, settings.buttonNames.referEarn, settings.buttonNames.profile, settings.buttonNames.support, settings.buttonNames.dailyCode, settings.buttonNames.activeCodes].includes(msg.text)) {
+          if (!geminiKey || geminiKey === "YOUR_GEMINI_API_KEY") {
+            bot.sendMessage(msg.chat.id, "🤖 <b>AI NOT CONFIGURED</b>\n_________________________\n\nPlease set your <code>GEMINI_API_KEY</code> in the AI Studio Secrets panel to enable AI chat.");
+            return;
+          }
           try {
             bot.sendChatAction(msg.chat.id, "typing");
             const response = await ai.models.generateContent({
               model: "gemini-3-flash-preview",
               contents: [{ parts: [{ text: msg.text }] }],
               config: {
-                systemInstruction: "You are the 'Top Follow Codes' bot. You help users get free Instagram followers by providing codes for the Top Follow app. You are friendly, energetic, and use emojis. Your messages should be professional and consistent with the bot's UI design (using separators like '_________________________' and bold headers). Use HTML tags for formatting: <b>bold</b>, <i>italic</i>, <code>code</code>. If users ask for codes, give them 'FREE500'. If they ask about the app, explain it helps get followers."
+                systemInstruction: "You are the 'Top Follow Codes' bot. You help users get free Instagram followers by providing codes for the Top Follow app. You are friendly, energetic, and use emojis. Your messages should be professional and consistent with the bot's UI design (using separators like '_________________________' and bold headers). Use HTML tags for formatting: <b>bold</b>, <i>italic</i>, <code>code</code>. If users ask for codes, give them 'FREE500'. If they ask about the app, explain it helps get followers. Users can refer friends to earn points and redeem premium loot for FREE."
               }
             });
             
             const aiText = response.text || "I'm not sure how to respond to that.";
-            bot.sendMessage(msg.chat.id, aiText, { parse_mode: "HTML" });
-          } catch (error) {
-            console.error("Gemini Error:", error);
-            bot.sendMessage(msg.chat.id, "Sorry, I'm having trouble thinking right now. 🤖");
+            console.log(`📤 [${botName}] Sending AI response to ${msg.chat.id}: ${aiText.substring(0, 50)}...`);
+            await bot.sendMessage(msg.chat.id, aiText, { parse_mode: "HTML" });
+          } catch (error: any) {
+            console.error("Gemini/Message Error:", error.message);
+            try {
+              // Fallback without HTML if it was an HTML error
+              await bot.sendMessage(msg.chat.id, "Sorry, I'm having trouble thinking right now. 🤖");
+            } catch (e) {
+              console.error("Final Fallback Error:", e);
+            }
           }
         }
       });
-
-    } catch (error) {
-      console.error("Failed to start Telegram bot:", error);
-      botStatus = "Error: Invalid Token";
-    }
-  } else {
-    botStatus = "Waiting for Token";
-    botName = "";
   }
 
-  // API routes
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
-  });
-
-  app.get("/api/bot-status", (req, res) => {
-    console.log("GET /api/bot-status hit");
-    res.json({ status: botStatus, name: botName, messages: lastMessages, settings });
-  });
+  // Initial bot setup
+  if (settings.bots && settings.bots.length > 0) {
+    settings.bots.forEach(botConfig => setupBot(botConfig));
+  } else if (token && token !== "YOUR_BOT_TOKEN") {
+    console.log("🤖 No bots in settings, but TELEGRAM_BOT_TOKEN found. Creating default bot...");
+    const defaultBot: BotConfig = {
+      id: "default-bot",
+      name: "Default Bot",
+      token: token,
+      status: "Initializing",
+      active: true
+    };
+    settings.bots = [defaultBot];
+    saveSettings(settings);
+    setupBot(defaultBot);
+  }
 
   // Admin credentials
-  const adminUsername = process.env.ADMIN_USERNAME || "admin";
-  const adminPassword = process.env.ADMIN_PASSWORD || "password123";
+  const adminUsername = (process.env.ADMIN_USERNAME || "admin").trim();
+  const adminPassword = (process.env.ADMIN_PASSWORD || "password123").trim();
+
+  console.log(`ℹ️ Admin credentials initialized: username="${adminUsername}", password="${adminPassword.substring(0, 2)}***"`);
 
   app.post("/api/admin/login", (req, res) => {
-    const { username, password } = req.body;
-    if (username === adminUsername && password === adminPassword) {
+    const { secret } = req.body;
+    const trimmedSecret = (secret || "").trim();
+    
+    console.log(`🔐 Admin login attempt with secret: "${trimmedSecret}"`);
+    
+    if (trimmedSecret === settings.adminSecret) {
+      console.log("✅ Admin login successful");
       res.json({ success: true, token: "admin-token-123" });
     } else {
-      res.status(401).json({ success: false, message: "Invalid credentials" });
+      console.log(`❌ Admin login failed: expected "${settings.adminSecret}", got "${trimmedSecret}"`);
+      res.status(401).json({ 
+        success: false, 
+        message: "Invalid secret key",
+        debug: process.env.NODE_ENV !== "production" ? `Expected: ${settings.adminSecret}` : undefined
+      });
     }
   });
 
@@ -466,8 +738,30 @@ async function startServer() {
   });
 
   app.post("/api/admin/settings", checkAdmin, (req, res) => {
+    const oldBots = [...(settings.bots || [])];
     settings = { ...settings, ...req.body };
     saveSettings(settings);
+
+    // Sync bots
+    if (settings.bots) {
+      settings.bots.forEach(newBot => {
+        const oldBot = oldBots.find(b => b.id === newBot.id);
+        if (!oldBot || oldBot.token !== newBot.token || oldBot.active !== newBot.active) {
+          setupBot(newBot);
+        }
+      });
+    }
+
+    // Stop removed bots
+    oldBots.forEach(oldBot => {
+      if (!settings.bots || !settings.bots.find(b => b.id === oldBot.id)) {
+        if (botInstances.has(oldBot.id)) {
+          botInstances.get(oldBot.id)?.bot.stopPolling();
+          botInstances.delete(oldBot.id);
+        }
+      }
+    });
+
     res.json({ success: true, settings });
   });
 
@@ -483,6 +777,28 @@ async function startServer() {
     }
   });
 
+  app.post("/api/admin/send-message", checkAdmin, async (req, res) => {
+    const { userId, message } = req.body;
+    if (!userId || !message) return res.status(400).json({ error: "Missing userId or message" });
+
+    let sent = false;
+    for (const [botId, { bot }] of botInstances.entries()) {
+      try {
+        await bot.sendMessage(userId, message, { parse_mode: "HTML" });
+        sent = true;
+        break;
+      } catch (err) {
+        console.error(`Failed to send via bot ${botId} to user ${userId}:`, err);
+      }
+    }
+
+    if (sent) {
+      res.json({ success: true });
+    } else {
+      res.status(500).json({ error: "Failed to send message through any bot" });
+    }
+  });
+
   app.post("/api/admin/broadcast", checkAdmin, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: "Message required" });
@@ -493,11 +809,15 @@ async function startServer() {
     const userIds = Object.keys(users);
     for (const id of userIds) {
       try {
-        if (bot) {
-          await bot.sendMessage(id, message, { parse_mode: "HTML" });
-          successCount++;
-        } else {
-          failCount++;
+        // Broadcast through all active bots
+        for (const [botId, { bot }] of botInstances.entries()) {
+          try {
+            await bot.sendMessage(id, message, { parse_mode: "HTML" });
+            successCount++;
+            break; // Successfully sent through one bot, move to next user
+          } catch (err) {
+            console.error(`Failed to send via bot ${botId} to user ${id}:`, err);
+          }
         }
       } catch (err) {
         failCount++;

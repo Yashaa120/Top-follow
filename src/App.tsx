@@ -12,19 +12,49 @@ interface UserData {
   joined: boolean;
 }
 
+interface BotConfig {
+  id: string;
+  name: string;
+  token: string;
+  status: string;
+  active: boolean;
+}
+
 interface BotSettings {
-  dailyCode: string;
+  dailyCodes: string[];
   activeCodes: string[];
   referralPoints: number;
+  bots: BotConfig[];
+  adminSecret: string;
+  buttonNames: {
+    getCodes: string;
+    referEarn: string;
+    profile: string;
+    support: string;
+    dailyCode: string;
+    activeCodes: string;
+  };
 }
 
 export default function App() {
   const [view, setView] = useState<'public' | 'admin'>('public');
-  const [status, setStatus] = useState<{ status: string; name: string; messages: any[]; settings: BotSettings }>({ 
-    status: 'Loading...', 
-    name: '', 
+  const [status, setStatus] = useState<{ messages: any[]; settings: BotSettings }>({ 
     messages: [],
-    settings: { dailyCode: '', activeCodes: [], referralPoints: 1 }
+    settings: { 
+      dailyCodes: [], 
+      activeCodes: [], 
+      referralPoints: 1, 
+      bots: [],
+      adminSecret: 'adminpanelopen123',
+      buttonNames: {
+        getCodes: '💎 GET CODES 🎁',
+        referEarn: '🤝 Refer & Earn',
+        profile: '👤 Profile',
+        support: '📞 Support',
+        dailyCode: '🔥 Daily Code',
+        activeCodes: '📋 Active Codes'
+      }
+    }
   });
   const [loading, setLoading] = useState(true);
   const [adminUsers, setAdminUsers] = useState<UserData[]>([]);
@@ -32,9 +62,38 @@ export default function App() {
   const [isBroadcasting, setIsBroadcasting] = useState(false);
   const [editingUser, setEditingUser] = useState<UserData | null>(null);
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(localStorage.getItem('adminToken') === 'admin-token-123');
-  const [adminUsername, setAdminUsername] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
+  const [adminSecret, setAdminSecret] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [newDailyCode, setNewDailyCode] = useState('');
+  const [newActiveCode, setNewActiveCode] = useState('');
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const secret = params.get('secret');
+    if (secret) {
+      handleSecretLogin(secret);
+    }
+  }, []);
+
+  const handleSecretLogin = async (secret: string) => {
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret })
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem('adminToken', data.token);
+        setIsAdminLoggedIn(true);
+        setLoginError('');
+        // Remove secret from URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    } catch (err) {
+      console.error('Auto login failed', err);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +101,7 @@ export default function App() {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: adminUsername, password: adminPassword })
+        body: JSON.stringify({ secret: adminSecret })
       });
       const data = await res.json();
       if (data.success) {
@@ -50,7 +109,7 @@ export default function App() {
         setIsAdminLoggedIn(true);
         setLoginError('');
       } else {
-        setLoginError('Invalid credentials');
+        setLoginError(data.debug ? `${data.message} (${data.debug})` : data.message);
       }
     } catch (err) {
       setLoginError('Login failed');
@@ -70,11 +129,16 @@ export default function App() {
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/bot-status');
-      if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      if (!res.ok) {
+        const text = await res.text();
+        console.error('Bot status fetch failed:', res.status, text);
+        throw new Error(`HTTP error! status: ${res.status}`);
+      }
       const data = await res.json();
       setStatus(data);
     } catch (err) {
       console.error('Failed to fetch bot status:', err);
+      setLoading(false);
     } finally {
       setLoading(false);
     }
@@ -140,6 +204,26 @@ export default function App() {
     }
   };
 
+  const sendMessageToUser = async (userId: string, message: string) => {
+    try {
+      const res = await fetch('/api/admin/send-message', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ userId, message })
+      });
+      if (res.ok) {
+        alert('Message sent successfully!');
+      } else if (res.status === 403) {
+        handleLogout();
+      } else {
+        alert('Failed to send message.');
+      }
+    } catch (err) {
+      console.error('Failed to send message:', err);
+      alert('Error sending message.');
+    }
+  };
+
   const handleBroadcast = async () => {
     if (!broadcastMsg) return;
     setIsBroadcasting(true);
@@ -193,18 +277,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${
-              status.status === 'Connected' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-              status.status === 'Waiting for Token' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-              'bg-rose-50 text-rose-700 border border-rose-200'
-            }`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${
-                status.status === 'Connected' ? 'bg-emerald-500 animate-pulse' :
-                status.status === 'Waiting for Token' ? 'bg-amber-500' :
-                'bg-rose-500'
-              }`} />
-              {status.status === 'Connected' ? 'Bot Active' : status.status}
-            </div>
             <button 
               onClick={() => { setLoading(true); fetchStatus(); if(view === 'admin') fetchAdminUsers(); }}
               className="p-2 hover:bg-zinc-100 rounded-lg transition-colors"
@@ -231,7 +303,7 @@ export default function App() {
                   <h2 className="text-3xl font-bold tracking-tight mb-4">Loot System Bot</h2>
                   <p className="text-zinc-500 text-lg leading-relaxed">
                     Your bot is now specialized in the Loot System. 
-                    Users can refer friends, earn points, and redeem Shein coupons for free.
+                    Users can refer friends, earn points, and redeem premium loot for free.
                   </p>
                 </section>
 
@@ -239,7 +311,7 @@ export default function App() {
                   <Step 
                     number="01"
                     title="Redeem Rewards"
-                    description="Users can redeem their earned points for Shein coupons and other loot."
+                    description="Users can redeem their earned points for premium loot."
                     icon={<Zap className="w-5 h-5" />}
                   />
                   <Step 
@@ -266,55 +338,6 @@ export default function App() {
 
               {/* Sidebar / Status Card */}
               <div className="space-y-6">
-                <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
-                  <h3 className="font-semibold mb-4 flex items-center gap-2">
-                    <Bot className="w-4 h-4 text-indigo-600" />
-                    Bot Status
-                  </h3>
-                  
-                  <div className="space-y-4">
-                    <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-100">
-                      <div className="text-xs text-zinc-400 uppercase font-bold tracking-wider mb-1">Username</div>
-                      <div className="font-mono text-sm">
-                        {status.name ? `@${status.name}` : 'Not configured'}
-                      </div>
-                    </div>
-
-                    {status.status === 'Connected' ? (
-                      <div className="flex items-start gap-3 p-4 bg-emerald-50 rounded-xl border border-emerald-100">
-                        <CheckCircle2 className="w-5 h-5 text-emerald-600 mt-0.5" />
-                        <div>
-                          <div className="font-medium text-emerald-900 text-sm">Online</div>
-                          <p className="text-xs text-emerald-700 mt-1">Your bot is responding to messages!</p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-start gap-3 p-4 bg-amber-50 rounded-xl border border-amber-100">
-                        <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
-                        <div>
-                          <div className="font-medium text-amber-900 text-sm">
-                            {status.status.startsWith('Error') ? 'Error' : 'Offline'}
-                          </div>
-                          <p className="text-xs text-amber-700 mt-1">
-                            {status.status.startsWith('Error') 
-                              ? status.status.replace('Error: ', '') 
-                              : 'Add your TELEGRAM_BOT_TOKEN to the secrets to start the bot.'}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <button 
-                    onClick={() => window.open(`https://t.me/${status.name}`, '_blank')}
-                    disabled={!status.name || status.name === 'Unknown'}
-                    className="w-full mt-6 bg-indigo-600 text-white py-2.5 rounded-xl font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                  >
-                    Open in Telegram
-                    <ExternalLink className="w-4 h-4" />
-                  </button>
-                </div>
-
                 <div className="bg-zinc-900 text-white rounded-2xl p-6">
                   <h3 className="font-semibold mb-2">Loot System Features</h3>
                   <div className="space-y-2">
@@ -323,6 +346,33 @@ export default function App() {
                     <div className="text-xs font-mono text-emerald-400">Join Check - Access Restricted UI</div>
                     <div className="text-xs font-mono text-red-400">Verification - Real-time Join Check</div>
                     <p className="text-xs text-zinc-500 italic">Rewards are updated automatically.</p>
+                  </div>
+                </div>
+
+                {/* Bot Status Card */}
+                <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
+                  <h3 className="font-semibold mb-4 flex items-center gap-2 text-sm text-zinc-500 uppercase tracking-wider">
+                    Bot Status
+                  </h3>
+                  <div className="space-y-3">
+                    {status.settings.bots && status.settings.bots.length > 0 ? (
+                      status.settings.bots.map((bot, i) => (
+                        <div key={i} className="flex items-center justify-between p-3 bg-zinc-50 rounded-xl border border-zinc-100">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-2 h-2 rounded-full ${bot.status === 'Connected' ? 'bg-emerald-500 animate-pulse' : bot.status.startsWith('Error') ? 'bg-rose-500' : 'bg-zinc-300'}`} />
+                            <div>
+                              <div className="text-sm font-bold text-zinc-700">{bot.name || 'Unnamed Bot'}</div>
+                              <div className="text-[10px] text-zinc-400 font-mono">{bot.id}</div>
+                            </div>
+                          </div>
+                          <div className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full ${bot.status === 'Connected' ? 'bg-emerald-50 text-emerald-600' : 'bg-zinc-100 text-zinc-400'}`}>
+                            {bot.status}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-zinc-400 italic text-center py-4">No bots configured yet.</p>
+                    )}
                   </div>
                 </div>
 
@@ -367,24 +417,13 @@ export default function App() {
 
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1.5 ml-1">Username</label>
-                  <input 
-                    type="text"
-                    value={adminUsername}
-                    onChange={(e) => setAdminUsername(e.target.value)}
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                    placeholder="admin"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1.5 ml-1">Password</label>
+                  <label className="block text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1.5 ml-1">Secret Key</label>
                   <input 
                     type="password"
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
+                    value={adminSecret}
+                    onChange={(e) => setAdminSecret(e.target.value)}
                     className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 transition-all"
-                    placeholder="••••••••"
+                    placeholder="Enter admin secret..."
                     required
                   />
                 </div>
@@ -399,6 +438,13 @@ export default function App() {
                   className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 active:scale-[0.98]"
                 >
                   Access Dashboard
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => { localStorage.removeItem('adminToken'); window.location.reload(); }}
+                  className="w-full mt-2 text-zinc-400 text-[10px] hover:text-zinc-600 transition-colors"
+                >
+                  Clear Session & Reload
                 </button>
               </form>
             </motion.div>
@@ -452,7 +498,7 @@ export default function App() {
                             <th className="px-6 py-3">User</th>
                             <th className="px-6 py-3">Points</th>
                             <th className="px-6 py-3">Referrals</th>
-                            <th className="px-6 py-3">Status</th>
+                            <th className="px-6 py-3">Joined</th>
                             <th className="px-6 py-3 text-right">Actions</th>
                           </tr>
                         </thead>
@@ -493,9 +539,21 @@ export default function App() {
                                     </button>
                                   </div>
                                 ) : (
-                                  <button onClick={() => setEditingUser(user)} className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-400 hover:text-indigo-600 transition-colors">
-                                    <Edit2 className="w-4 h-4" />
-                                  </button>
+                                  <div className="flex justify-end gap-2">
+                                    <button 
+                                      onClick={() => {
+                                        const msg = prompt(`Send message to ${user.firstName}:`);
+                                        if (msg) sendMessageToUser(user.id, msg);
+                                      }} 
+                                      className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-400 hover:text-indigo-600 transition-colors"
+                                      title="Send Message"
+                                    >
+                                      <MessageSquare className="w-4 h-4" />
+                                    </button>
+                                    <button onClick={() => setEditingUser(user)} className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-400 hover:text-indigo-600 transition-colors">
+                                      <Edit2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -508,22 +566,172 @@ export default function App() {
 
                 {/* Sidebar Controls */}
                 <div className="space-y-6">
+                  <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
+                    <h3 className="font-semibold mb-4 flex items-center gap-2">
+                      <Bot className="w-4 h-4 text-indigo-600" />
+                      Manage Bots
+                    </h3>
+                    <div className="space-y-4">
+                      {status.settings.bots?.map((bot) => (
+                        <div key={bot.id} className="p-4 bg-zinc-50 rounded-xl border border-zinc-100 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2 h-2 rounded-full ${
+                                bot.status === 'Connected' ? 'bg-emerald-500 animate-pulse' :
+                                bot.status === 'Inactive' ? 'bg-zinc-300' : 'bg-amber-500'
+                              }`} />
+                              <span className="font-bold text-sm">{bot.name || 'New Bot'}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button 
+                                onClick={() => {
+                                  const newBots = status.settings.bots.map(b => 
+                                    b.id === bot.id ? { ...b, active: !b.active } : b
+                                  );
+                                  updateSettings({ bots: newBots });
+                                }}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase transition-all ${
+                                  bot.active ? 'bg-emerald-100 text-emerald-700' : 'bg-zinc-200 text-zinc-500'
+                                }`}
+                              >
+                                {bot.active ? 'Active' : 'Inactive'}
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  if (confirm('Delete this bot?')) {
+                                    updateSettings({ bots: status.settings.bots.filter(b => b.id !== bot.id) });
+                                  }
+                                }}
+                                className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <div className="space-y-2">
+                            <input 
+                              type="text"
+                              value={bot.name}
+                              onChange={(e) => {
+                                const newBots = status.settings.bots.map(b => 
+                                  b.id === bot.id ? { ...b, name: e.target.value } : b
+                                );
+                                updateSettings({ bots: newBots });
+                              }}
+                              placeholder="Bot Name (e.g. Main Bot)"
+                              className="w-full px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs"
+                            />
+                            <input 
+                              type="password"
+                              value={bot.token}
+                              onChange={(e) => {
+                                const newBots = status.settings.bots.map(b => 
+                                  b.id === bot.id ? { ...b, token: e.target.value } : b
+                                );
+                                updateSettings({ bots: newBots });
+                              }}
+                              placeholder="Bot Token"
+                              className="w-full px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs font-mono"
+                            />
+                          </div>
+                          <div className="text-[10px] text-zinc-400 italic">Status: {bot.status}</div>
+                        </div>
+                      ))}
+                      
+                      <button 
+                        onClick={() => {
+                          const newBot: BotConfig = {
+                            id: Math.random().toString(36).substr(2, 9),
+                            name: '',
+                            token: '',
+                            status: 'New',
+                            active: false
+                          };
+                          updateSettings({ bots: [...(status.settings.bots || []), newBot] });
+                        }}
+                        className="w-full py-2 border-2 border-dashed border-zinc-200 rounded-xl text-zinc-400 hover:text-indigo-600 hover:border-indigo-200 transition-all flex items-center justify-center gap-2 text-sm font-medium"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Add New Bot
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Settings */}
                   <div className="bg-white border border-zinc-200 rounded-2xl p-6 shadow-sm">
                     <h3 className="font-semibold mb-4 flex items-center gap-2">
                       <Settings className="w-4 h-4 text-indigo-600" />
-                      Bot Settings
+                      Global Settings
                     </h3>
                     <div className="space-y-4">
                       <div>
-                        <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1 block">Daily Code</label>
-                        <div className="flex gap-2">
-                          <input 
-                            type="text" 
-                            value={status.settings.dailyCode}
-                            onChange={(e) => updateSettings({ dailyCode: e.target.value })}
-                            className="flex-1 px-3 py-2 bg-zinc-50 border border-zinc-100 rounded-xl text-sm font-mono"
-                          />
+                        <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1 block">Admin Secret Key</label>
+                        <input 
+                          type="text" 
+                          value={status.settings.adminSecret}
+                          onChange={(e) => updateSettings({ adminSecret: e.target.value })}
+                          className="w-full px-3 py-2 bg-zinc-50 border border-zinc-100 rounded-xl text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1 block">Button Names</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {Object.entries(status.settings.buttonNames || {}).map(([key, val]) => (
+                            <div key={key}>
+                              <label className="text-[10px] text-zinc-400 ml-1">{key}</label>
+                              <input 
+                                type="text" 
+                                value={val as string}
+                                onChange={(e) => {
+                                  const newNames = { ...status.settings.buttonNames, [key]: e.target.value };
+                                  updateSettings({ buttonNames: newNames });
+                                }}
+                                className="w-full px-2 py-1.5 bg-zinc-50 border border-zinc-100 rounded-lg text-xs"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-1 block">Daily Codes</label>
+                        <div className="space-y-2">
+                          {(status.settings.dailyCodes || []).map((code, i) => (
+                            <div key={i} className="flex items-center justify-between bg-zinc-50 px-3 py-2 rounded-xl border border-zinc-100">
+                              <span className="text-sm font-mono">{code}</span>
+                              <button 
+                                onClick={() => updateSettings({ dailyCodes: status.settings.dailyCodes.filter((_, idx) => idx !== i) })}
+                                className="text-rose-500 hover:bg-rose-50 p-1 rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                          <div className="flex gap-2">
+                            <input 
+                              type="text" 
+                              placeholder="New daily code..."
+                              value={newDailyCode}
+                              onChange={(e) => setNewDailyCode(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && newDailyCode) {
+                                  updateSettings({ dailyCodes: [...(status.settings.dailyCodes || []), newDailyCode] });
+                                  setNewDailyCode('');
+                                }
+                              }}
+                              className="flex-1 px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm font-mono"
+                            />
+                            <button 
+                              onClick={() => {
+                                if (newDailyCode) {
+                                  updateSettings({ dailyCodes: [...(status.settings.dailyCodes || []), newDailyCode] });
+                                  setNewDailyCode('');
+                                }
+                              }}
+                              className="bg-indigo-600 p-2 rounded-xl hover:bg-indigo-700 transition-colors"
+                            >
+                              <Plus className="w-4 h-4 text-white" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                       <div>
@@ -553,20 +761,27 @@ export default function App() {
                             <input 
                               type="text" 
                               placeholder="New code..."
+                              value={newActiveCode}
+                              onChange={(e) => setNewActiveCode(e.target.value)}
                               onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  const val = e.currentTarget.value;
-                                  if (val) {
-                                    updateSettings({ activeCodes: [...status.settings.activeCodes, val] });
-                                    e.currentTarget.value = '';
-                                  }
+                                if (e.key === 'Enter' && newActiveCode) {
+                                  updateSettings({ activeCodes: [...status.settings.activeCodes, newActiveCode] });
+                                  setNewActiveCode('');
                                 }
                               }}
                               className="flex-1 px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm font-mono"
                             />
-                            <div className="bg-zinc-100 p-2 rounded-xl">
-                              <Plus className="w-4 h-4 text-zinc-400" />
-                            </div>
+                            <button 
+                              onClick={() => {
+                                if (newActiveCode) {
+                                  updateSettings({ activeCodes: [...status.settings.activeCodes, newActiveCode] });
+                                  setNewActiveCode('');
+                                }
+                              }}
+                              className="bg-indigo-600 p-2 rounded-xl hover:bg-indigo-700 transition-colors"
+                            >
+                              <Plus className="w-4 h-4 text-white" />
+                            </button>
                           </div>
                         </div>
                       </div>

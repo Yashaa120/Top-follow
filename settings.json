@@ -1,0 +1,15 @@
+{
+  "dailyCode": "FREE500",
+  "activeCodes": [],
+  "referralPoints": 1,
+  "bots": [
+    {
+      "id": "default",
+      "name": "topfollow_coder_bot",
+      "token": "8663157895:AAGBpn-N5igxCcCbb1yb-WGhmR58VY5wJaE",
+      "status": "Connected",
+      "active": true
+    }
+  ],
+  "botToken": ""
+}
