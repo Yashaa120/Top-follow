@@ -82,6 +82,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ secret })
       });
+      
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`Auto login failed with status ${res.status}: ${text}`);
+        return;
+      }
+
       const data = await res.json();
       if (data.success) {
         localStorage.setItem('adminToken', data.token);
@@ -98,12 +105,26 @@ export default function App() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError('');
     try {
       const res = await fetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ secret: adminSecret })
       });
+      
+      if (!res.ok) {
+        let errorMessage = `Server error (${res.status})`;
+        try {
+          const data = await res.json();
+          errorMessage = data.debug ? `${data.message} (${data.debug})` : data.message;
+        } catch (e) {
+          // Not JSON
+        }
+        setLoginError(errorMessage);
+        return;
+      }
+
       const data = await res.json();
       if (data.success) {
         localStorage.setItem('adminToken', data.token);
@@ -113,7 +134,8 @@ export default function App() {
         setLoginError(data.debug ? `${data.message} (${data.debug})` : data.message);
       }
     } catch (err) {
-      setLoginError('Login failed');
+      console.error('Login error:', err);
+      setLoginError('Connection failed. Is the server running?');
     }
   };
 
@@ -440,13 +462,31 @@ export default function App() {
                 >
                   Access Dashboard
                 </button>
-                <button 
-                  type="button"
-                  onClick={() => { localStorage.removeItem('adminToken'); window.location.reload(); }}
-                  className="w-full mt-2 text-zinc-400 text-[10px] hover:text-zinc-600 transition-colors"
-                >
-                  Clear Session & Reload
-                </button>
+                
+                <div className="flex flex-col gap-2 mt-4">
+                  <button 
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/health');
+                        const data = await res.json();
+                        alert(`Server Status: ${data.status}\nEnv: ${data.env}\nVercel: ${data.isVercel}\nTime: ${data.time}`);
+                      } catch (e) {
+                        alert('Server is unreachable. Check if it is running.');
+                      }
+                    }}
+                    className="text-zinc-400 text-[10px] hover:text-zinc-600 transition-colors"
+                  >
+                    Check Server Health
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => { localStorage.removeItem('adminToken'); window.location.reload(); }}
+                    className="text-zinc-400 text-[10px] hover:text-zinc-600 transition-colors"
+                  >
+                    Clear Session & Reload
+                  </button>
+                </div>
               </form>
             </motion.div>
           ) : (

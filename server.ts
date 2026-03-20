@@ -111,6 +111,9 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
+const app = express();
+app.use(express.json());
+
 async function startServer() {
   console.log("🚀 Server starting...");
   console.log(`🔑 GEMINI_API_KEY: ${process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "YOUR_GEMINI_API_KEY" ? "SET (..." + process.env.GEMINI_API_KEY.substring(0, 5) + ")" : "NOT SET or DEFAULT"}`);
@@ -119,10 +122,7 @@ async function startServer() {
   console.log(`👤 ADMIN_USERNAME: ${process.env.ADMIN_USERNAME || "default (admin)"}`);
   console.log(`🔒 ADMIN_PASSWORD: ${process.env.ADMIN_PASSWORD ? "SET (..." + process.env.ADMIN_PASSWORD.substring(0, 2) + ")" : "default (password123)"}`);
 
-  const app = express();
   const PORT = 3000;
-
-  app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
   const token = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
@@ -701,6 +701,16 @@ async function startServer() {
     setupBot(defaultBot);
   }
 
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ 
+      status: "ok", 
+      time: new Date().toISOString(),
+      env: process.env.NODE_ENV,
+      isVercel: !!process.env.VERCEL
+    });
+  });
+
   // Admin credentials
   const adminUsername = (process.env.ADMIN_USERNAME || "admin").trim();
   const adminPassword = (process.env.ADMIN_PASSWORD || "password123").trim();
@@ -835,24 +845,32 @@ async function startServer() {
     res.json({ success: true, successCount, failCount });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.env.NETLIFY && !process.env.VERCEL) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (process.env.NODE_ENV === "production" || process.env.NETLIFY || process.env.VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (!process.env.NETLIFY && !process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
+      console.log(`ℹ️ Environment: ${process.env.NODE_ENV || 'development'}`);
+    });
+  }
 }
 
-startServer();
+export { app };
+
+if (process.env.NODE_ENV !== "test") {
+  startServer();
+}
