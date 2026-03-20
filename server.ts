@@ -435,7 +435,11 @@ async function startServer() {
 
       bot.onText(/\/admin/, (msg) => {
         console.log(`🔐 [${botName}] Admin command received from ${msg.from?.first_name}`);
-        const adminMsg = "🔐 <b>ADMIN ACCESS</b>\n_________________________\n\nPlease enter your <b>Admin Username</b> and <b>Password</b> in the following format:\n\n<code>login [username] [password]</code>\n\n<i>Example: login admin password123</i>";
+        const appUrl = (process.env.APP_URL || "https://ais-dev-rzbx5hupfvpx2d3wg3ablv-376426211502.asia-east1.run.app").replace(/\/$/, "");
+        const currentSecret = process.env.ADMIN_SECRET || settings.adminSecret;
+        const adminUrl = `${appUrl}?secret=${currentSecret}`;
+
+        const adminMsg = `🔐 <b>ADMIN ACCESS</b>\n_________________________\n\n🌐 <b>Web Dashboard:</b>\n<a href="${adminUrl}">Open Admin Panel</a>\n\n🤖 <b>Bot Admin Login:</b>\nPlease enter your <b>Admin Username</b> and <b>Password</b> in the following format:\n\n<code>login [username] [password]</code>\n\n<i>Example: login admin password123</i>`;
         bot.sendMessage(msg.chat.id, adminMsg, { parse_mode: "HTML" });
       });
 
@@ -464,8 +468,8 @@ async function startServer() {
       });
 
       bot.onText(/\/adminpanelopen123/, (msg) => {
-        const appUrl = process.env.APP_URL || "https://ais-dev-rzbx5hupfvpx2d3wg3ablv-376426211502.asia-east1.run.app";
-        const adminUrl = `${appUrl}/admin?secret=${settings.adminSecret}`;
+        const appUrl = (process.env.APP_URL || "https://ais-dev-rzbx5hupfvpx2d3wg3ablv-376426211502.asia-east1.run.app").replace(/\/$/, "");
+        const adminUrl = `${appUrl}?secret=${settings.adminSecret}`;
         bot.sendMessage(msg.chat.id, `🔐 <b>ADMIN PANEL ACCESS</b>\n\nClick the link below to access the admin panel:\n\n<a href="${adminUrl}">Open Admin Panel</a>`, { parse_mode: "HTML" });
       });
 
@@ -534,7 +538,7 @@ async function startServer() {
 
       bot.onText(/\/help/, (msg) => {
         console.log(`❓ [${botName}] Help command received from ${msg.from?.first_name}`);
-        let helpMessage = "🚀 <b>HELP MENU</b>\n_________________________\n\nI provide daily codes for the Top Follow app to help you get free followers.\n\n<b>Commands:</b>\n<code>/daily</code> - Get today's code\n<code>/code</code> - Show all active codes\n<code>/list</code> - See custom commands\n<code>/set [cmd] [text]</code> - Create your own command";
+        let helpMessage = "🚀 <b>HELP MENU</b>\n_________________________\n\nI provide daily codes for the Top Follow app to help you get free followers.\n\n<b>Commands:</b>\n<code>/daily</code> - Get today's code\n<code>/code</code> - Show all active codes\n<code>/list</code> - See custom commands\n<code>/admin</code> - Access Admin Panel";
         
         if (authenticatedAdmins.has(msg.chat.id)) {
           helpMessage += "\n\n🔐 <b>ADMIN COMMANDS:</b>\n<code>/stats</code> - View bot stats\n<code>/broadcast [msg]</code> - Broadcast to all\n<code>/bots</code> - View bot instances\n<code>/logout</code> - End session";
@@ -700,24 +704,29 @@ async function startServer() {
   // Admin credentials
   const adminUsername = (process.env.ADMIN_USERNAME || "admin").trim();
   const adminPassword = (process.env.ADMIN_PASSWORD || "password123").trim();
+  const currentSecret = process.env.ADMIN_SECRET || settings.adminSecret;
 
-  console.log(`ℹ️ Admin credentials initialized: username="${adminUsername}", password="${adminPassword.substring(0, 2)}***"`);
+  console.log(`ℹ️ Admin credentials initialized: username="${adminUsername}", password="${adminPassword.substring(0, 2)}***", secret="${currentSecret}"`);
 
   app.post("/api/admin/login", (req, res) => {
     const { secret } = req.body;
     const trimmedSecret = (secret || "").trim();
     
+    // Allow override via environment variable
+    const envSecret = process.env.ADMIN_SECRET;
+    const expectedSecret = envSecret || settings.adminSecret;
+    
     console.log(`🔐 Admin login attempt with secret: "${trimmedSecret}"`);
     
-    if (trimmedSecret === settings.adminSecret) {
+    if (trimmedSecret === expectedSecret) {
       console.log("✅ Admin login successful");
       res.json({ success: true, token: "admin-token-123" });
     } else {
-      console.log(`❌ Admin login failed: expected "${settings.adminSecret}", got "${trimmedSecret}"`);
+      console.log(`❌ Admin login failed: expected "${expectedSecret}", got "${trimmedSecret}"`);
       res.status(401).json({ 
         success: false, 
         message: "Invalid secret key",
-        debug: process.env.NODE_ENV !== "production" ? `Expected: ${settings.adminSecret}` : undefined
+        debug: process.env.NODE_ENV !== "production" ? `Expected: ${expectedSecret}` : undefined
       });
     }
   });

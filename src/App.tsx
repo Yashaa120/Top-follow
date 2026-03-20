@@ -86,6 +86,7 @@ export default function App() {
       if (data.success) {
         localStorage.setItem('adminToken', data.token);
         setIsAdminLoggedIn(true);
+        setView('admin');
         setLoginError('');
         // Remove secret from URL
         window.history.replaceState({}, document.title, window.location.pathname);
