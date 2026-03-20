@@ -90,7 +90,7 @@ async function startServer() {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
   const geminiKey = process.env.GEMINI_API_KEY;
   
   let botStatus = "Disconnected";
@@ -433,6 +433,7 @@ async function startServer() {
   });
 
   app.get("/api/bot-status", (req, res) => {
+    console.log("GET /api/bot-status hit");
     res.json({ status: botStatus, name: botName, messages: lastMessages, settings });
   });
 

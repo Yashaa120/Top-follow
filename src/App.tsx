@@ -292,8 +292,14 @@ export default function App() {
                       <div className="flex items-start gap-3 p-4 bg-amber-50 rounded-xl border border-amber-100">
                         <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5" />
                         <div>
-                          <div className="font-medium text-amber-900 text-sm">Offline</div>
-                          <p className="text-xs text-amber-700 mt-1">Add your token to the secrets to start the bot.</p>
+                          <div className="font-medium text-amber-900 text-sm">
+                            {status.status.startsWith('Error') ? 'Error' : 'Offline'}
+                          </div>
+                          <p className="text-xs text-amber-700 mt-1">
+                            {status.status.startsWith('Error') 
+                              ? status.status.replace('Error: ', '') 
+                              : 'Add your TELEGRAM_BOT_TOKEN to the secrets to start the bot.'}
+                          </p>
                         </div>
                       </div>
                     )}
